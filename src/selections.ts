@@ -5,7 +5,6 @@ import {
   filtersFromSelections,
   innerFilterParams,
   paramsToString,
-  getFilterParams,
   innerType,
   isGraphqlScalarType,
   extractSelections,
@@ -44,18 +43,11 @@ export function buildCypherSelection({
     return [initial, {}];
   }
   selections = removeIgnoredFields(schemaType, selections);
-  let selectionFilters = filtersFromSelections(
-    selections,
-    resolveInfo.variableValues
-  );
-  const filterParams = getFilterParams(selectionFilters, paramIndex);
-  const shallowFilterParams = Object.entries(filterParams).reduce(
-    (result, [key, value]) => {
-      result[`${value.index}_${key}`] = value.value;
-      return result;
-    },
-    {}
-  );
+  let selectionFilters = filtersFromSelections(selections, resolveInfo.variableValues);
+  const shallowFilterParams = Object.entries(filterParams).reduce((result, [key, value]) => {
+    result[`${paramIndex}_${key}`] = value;
+    return result;
+  }, {});
 
   const [headSelection, ...tailSelections] = selections;
 
@@ -71,8 +63,7 @@ export function buildCypherSelection({
   };
 
   const recurse = args => {
-    paramIndex =
-      Object.keys(shallowFilterParams).length > 0 ? paramIndex + 1 : paramIndex;
+    paramIndex = Object.keys(shallowFilterParams).length > 0 ? paramIndex + 1 : paramIndex;
     const [subSelection, subFilterParams] = buildCypherSelection({
       ...args,
       ...{ paramIndex }
@@ -96,9 +87,7 @@ export function buildCypherSelection({
         secondParentSelectionInfo
       };
       return recurse({
-        initial: fragmentSelections.length
-          ? initial
-          : initial.substring(0, initial.lastIndexOf(',')),
+        initial: fragmentSelections.length ? initial : initial.substring(0, initial.lastIndexOf(',')),
         ...fragmentTailParams
       });
     } else {
@@ -108,46 +97,31 @@ export function buildCypherSelection({
 
   const commaIfTail = tailSelections.length > 0 ? ',' : '';
   const isScalarSchemaType = isGraphqlScalarType(schemaType);
-  const schemaTypeField = !isScalarSchemaType
-    ? schemaType.getFields()[fieldName]
-    : {};
+  const schemaTypeField = !isScalarSchemaType ? schemaType.getFields()[fieldName] : {};
   // Schema meta fields(__schema, __typename, etc)
   if (!isScalarSchemaType && !schemaTypeField) {
     return recurse({
-      initial: tailSelections.length
-        ? initial
-        : initial.substring(0, initial.lastIndexOf(',')),
+      initial: tailSelections.length ? initial : initial.substring(0, initial.lastIndexOf(',')),
       ...tailParams
     });
   }
 
-  const fieldType =
-    schemaTypeField && schemaTypeField.type ? schemaTypeField.type : {};
+  const fieldType = schemaTypeField && schemaTypeField.type ? schemaTypeField.type : {};
   const innerSchemaType = innerType(fieldType); // for target "type" aka label
 
-  if (
-    innerSchemaType &&
-    innerSchemaType.astNode &&
-    innerSchemaType.astNode.kind === 'InterfaceTypeDefinition'
-  ) {
+  if (innerSchemaType && innerSchemaType.astNode && innerSchemaType.astNode.kind === 'InterfaceTypeDefinition') {
     isInlineFragment = true;
     // FIXME: remove unused variables
     const interfaceType = schemaType;
     const interfaceName = innerSchemaType.name;
 
-    const fragments = headSelection.selectionSet.selections.filter(
-      item => item.kind === 'InlineFragment'
-    );
+    const fragments = headSelection.selectionSet.selections.filter(item => item.kind === 'InlineFragment');
 
     // FIXME: this will only handle the first inline fragment
     const fragment = fragments[0];
 
-    interfaceLabel = fragment
-      ? fragment.typeCondition.name.value
-      : interfaceName;
-    const implementationName = fragment
-      ? fragment.typeCondition.name.value
-      : interfaceName;
+    interfaceLabel = fragment ? fragment.typeCondition.name.value : interfaceName;
+    const implementationName = fragment ? fragment.typeCondition.name.value : interfaceName;
 
     const schemaType = resolveInfo.schema._implementations[interfaceName].find(
       intfc => intfc.name === implementationName
@@ -162,9 +136,7 @@ export function buildCypherSelection({
   // Database meta fields(_id)
   if (fieldName === '_id') {
     return recurse({
-      initial: `${initial}${fieldName}: ID(${safeVar(
-        variableName
-      )})${commaIfTail}`,
+      initial: `${initial}${fieldName}: ID(${safeVar(variableName)})${commaIfTail}`,
       ...tailParams
     });
   }
@@ -205,18 +177,10 @@ export function buildCypherSelection({
     });
   }
   // We have a graphql object type
-  const innerSchemaTypeAstNode =
-    innerSchemaType && typeMap[innerSchemaType]
-      ? typeMap[innerSchemaType].astNode
-      : {};
-  const innerSchemaTypeRelation = getRelationTypeDirective(
-    innerSchemaTypeAstNode
-  );
+  const innerSchemaTypeAstNode = innerSchemaType && typeMap[innerSchemaType] ? typeMap[innerSchemaType].astNode : {};
+  const innerSchemaTypeRelation = getRelationTypeDirective(innerSchemaTypeAstNode);
   const schemaTypeRelation = getRelationTypeDirective(schemaTypeAstNode);
-  const { name: relType, direction: relDirection } = relationDirective(
-    schemaType,
-    fieldName
-  );
+  const { name: relType, direction: relDirection } = relationDirective(schemaType, fieldName);
 
   const nestedVariable = decideNestedVariableName({
     schemaTypeRelation,
@@ -254,13 +218,9 @@ export function buildCypherSelection({
 
   let selection;
   const fieldArgs =
-    !isScalarSchemaType && schemaTypeField && schemaTypeField.args
-      ? schemaTypeField.args.map(e => e.astNode)
-      : [];
+    !isScalarSchemaType && schemaTypeField && schemaTypeField.args ? schemaTypeField.args.map(e => e.astNode) : [];
   const temporalArgs = getTemporalArguments(fieldArgs);
-  const queryParams = paramsToString(
-    innerFilterParams(filterParams, temporalArgs)
-  );
+  const queryParams = paramsToString(innerFilterParams(filterParams, temporalArgs));
   const fieldInfo = {
     initial,
     fieldName,
@@ -300,11 +260,7 @@ export function buildCypherSelection({
     );
   } else if (relType && relDirection) {
     // Object type field with relation directive
-    const temporalClauses = temporalPredicateClauses(
-      filterParams,
-      nestedVariable,
-      temporalArgs
-    );
+    const temporalClauses = temporalPredicateClauses(filterParams, nestedVariable, temporalArgs);
     // translate field, arguments and argument params
     const translation = relationFieldOnNodeType({
       ...fieldInfo,

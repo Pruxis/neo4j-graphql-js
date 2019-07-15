@@ -1,8 +1,18 @@
-import { print, parse } from 'graphql';
-import { possiblyAddDirectiveDeclarations } from './auth';
+import lodash, { Dictionary } from 'lodash';
 import { v1 as neo4j } from 'neo4j-driver';
-import _ from 'lodash';
-import filter from 'lodash/filter';
+import {
+  print,
+  parse,
+  GraphQLOutputType,
+  GraphQLResolveInfo,
+  SelectionNode,
+  FragmentDefinitionNode,
+  FieldNode,
+  InlineFragmentNode,
+  GraphQLNonNull,
+  GraphQLList,
+  GraphQLNamedType
+} from 'graphql';
 
 function parseArg(arg, variableValues) {
   switch (arg.value.kind) {
@@ -19,9 +29,7 @@ function parseArg(arg, variableValues) {
       return parseArgs(arg.value.fields, variableValues);
     }
     case 'ListValue': {
-      return _.map(arg.value.values, value =>
-        parseArg({ value }, variableValues)
-      );
+      return lodash.map(arg.value.values, value => parseArg({ value }, variableValues));
     }
     case 'NullValue': {
       return null;
@@ -65,10 +73,7 @@ export const buildInputValueDefinitions = fields => {
 };
 
 export const parseDirectiveSdl = sdl => {
-  return sdl
-    ? parse(`type Type { field: String ${sdl} }`).definitions[0].fields[0]
-        .directives[0]
-    : {};
+  return sdl ? parse(`type Type { field: String ${sdl} }`).definitions[0].fields[0].directives[0] : {};
 };
 
 export const printTypeMap = typeMap => {
@@ -88,18 +93,22 @@ export const extractTypeMapFromTypeDefs = typeDefs => {
   }, {});
 };
 
-export function extractSelections(selections, fragments) {
-  // extract any fragment selection sets into a single array of selections
-  return selections.reduce((acc, cur) => {
-    if (cur.kind === 'FragmentSpread') {
+export function extractSelections(
+  selections: readonly SelectionNode[],
+  fragments: { [index: string]: FragmentDefinitionNode }
+): Array<FieldNode | InlineFragmentNode> {
+  return selections.reduce((acc: Array<FieldNode | InlineFragmentNode>, cur) => {
+    // Check if a fragment is being spread in the selection: like object { ...ObjectFragment }
+    if (cur.kind === 'FragmentSpread' && fragments[cur.name.value].selectionSet.selections) {
+      // Recursively look up the fields that have to be selected from the fragment.
       const recursivelyExtractedSelections = extractSelections(
         fragments[cur.name.value].selectionSet.selections,
         fragments
       );
-      return [...acc, ...recursivelyExtractedSelections];
-    } else {
-      return [...acc, cur];
+      return acc.concat(recursivelyExtractedSelections);
     }
+    acc.push(cur as FieldNode | InlineFragmentNode);
+    return acc;
   }, []);
 }
 
@@ -114,7 +123,7 @@ export function extractQueryResult({ records }, returnType) {
     result = Array.isArray(result) ? result[0] : result;
   }
   // handle Integer fields
-  result = _.cloneDeepWith(result, field => {
+  result = lodash.cloneDeepWith(result, field => {
     if (neo4j.isInt(field)) {
       // See: https://neo4j.com/docs/api/javascript-driver/current/class/src/v1/integer.js~Integer.html
       return field.inSafeRange() ? field.toNumber() : field.toString();
@@ -123,12 +132,9 @@ export function extractQueryResult({ records }, returnType) {
   return result;
 }
 
-export function typeIdentifiers(returnType) {
+export function typeIdentifiers(returnType: GraphQLOutputType) {
   const typeName = innerType(returnType).toString();
-  return {
-    variableName: lowFirstLetter(typeName),
-    typeName
-  };
+  return { typeName, variableName: lowFirstLetter(typeName) };
 }
 
 function getDefaultArguments(fieldName, schemaType) {
@@ -143,14 +149,7 @@ function getDefaultArguments(fieldName, schemaType) {
   }
 }
 
-export function cypherDirectiveArgs(
-  variable,
-  headSelection,
-  cypherParams,
-  schemaType,
-  resolveInfo,
-  paramIndex
-) {
+export function cypherDirectiveArgs(variable, headSelection, cypherParams, schemaType, resolveInfo, paramIndex) {
   // Get any default arguments or an empty object
   const defaultArgs = getDefaultArguments(headSelection.name.value, schemaType);
   // Set the $this parameter by default
@@ -158,10 +157,7 @@ export function cypherDirectiveArgs(
   // If cypherParams are provided, add the parameter
   if (cypherParams) args.push(`cypherParams: $cypherParams`);
   // Parse field argument values
-  const queryArgs = parseArgs(
-    headSelection.arguments,
-    resolveInfo.variableValues
-  );
+  const queryArgs = parseArgs(headSelection.arguments, resolveInfo.variableValues);
   // Add arguments that have default values, if no value is provided
   Object.keys(defaultArgs).forEach(e => {
     // Use only if default value exists and no value has been provided
@@ -183,35 +179,8 @@ export function cypherDirectiveArgs(
   return args.join(', ');
 }
 
-export function _isNamedMutation(name) {
-  return function(resolveInfo) {
-    return (
-      isMutation(resolveInfo) &&
-      resolveInfo.fieldName.split(/(?=[A-Z])/)[0].toLowerCase() ===
-        name.toLowerCase()
-    );
-  };
-}
-
-export const isCreateMutation = _isNamedMutation('create');
-
-export const isAddMutation = _isNamedMutation('add');
-
-export const isUpdateMutation = _isNamedMutation('update');
-
-export const isDeleteMutation = _isNamedMutation('delete');
-
-export const isRemoveMutation = _isNamedMutation('remove');
-
-export function isMutation(resolveInfo) {
-  return resolveInfo.operation.operation === 'mutation';
-}
-
 export function isGraphqlScalarType(type) {
-  return (
-    type.constructor.name === 'GraphQLScalarType' ||
-    type.constructor.name === 'GraphQLEnumType'
-  );
+  return type.constructor.name === 'GraphQLScalarType' || type.constructor.name === 'GraphQLEnumType';
 }
 
 export function isArrayType(type) {
@@ -243,13 +212,7 @@ export const isNonNullType = (type, isRequired = false, parent = {}) => {
 };
 
 export const isBasicScalar = name => {
-  return (
-    name === 'ID' ||
-    name === 'String' ||
-    name === 'Float' ||
-    name === 'Int' ||
-    name === 'Boolean'
-  );
+  return name === 'ID' || name === 'String' || name === 'Float' || name === 'Int' || name === 'Boolean';
 };
 
 export const isNodeType = astNode => {
@@ -279,88 +242,49 @@ export const isRelationTypePayload = schemaType => {
     : undefined;
 };
 
-export const isRootSelection = ({ selectionInfo, rootType }) =>
-  selectionInfo && selectionInfo.rootType === rootType;
+export const isRootSelection = ({ selectionInfo, rootType }) => selectionInfo && selectionInfo.rootType === rootType;
 
-export function lowFirstLetter(word) {
-  return word.charAt(0).toLowerCase() + word.slice(1);
-}
+export const lowFirstLetter = (word: string): string => word.charAt(0).toLowerCase() + word.slice(1);
 
-export function innerType(type) {
-  return type.ofType ? innerType(type.ofType) : type;
+const hasOfType = (type: any): type is GraphQLList<any> => type.ofType;
+
+export function innerType(type: GraphQLOutputType): GraphQLOutputType {
+  if (hasOfType(type)) return innerType(type.ofType);
+  return type;
 }
 
 export function filtersFromSelections(selections, variableValues) {
-  if (
-    selections &&
-    selections.length &&
-    selections[0].arguments &&
-    selections[0].arguments.length
-  ) {
+  if (selections && selections.length && selections[0].arguments && selections[0].arguments.length) {
     return selections[0].arguments.reduce((result, x) => {
-      (result[x.name.value] = argumentValue(
-        selections[0],
-        x.name.value,
-        variableValues
-      )) || x.value.value;
+      (result[x.name.value] = argumentValue(selections[0], x.name.value, variableValues)) || x.value.value;
       return result;
     }, {});
   }
   return {};
 }
 
-export function getFilterParams(filters, index) {
-  return Object.entries(filters).reduce((result, [key, value]) => {
-    result[key] = index
-      ? {
-          value,
-          index
-        }
-      : value;
-    return result;
-  }, {});
-}
-
 export function innerFilterParams(
-  filters,
-  temporalArgs,
-  paramKey,
-  cypherDirective
+  filters: Dictionary<any>,
+  paramKey?: string | null,
+  cypherDirective: boolean = false
 ) {
-  const temporalArgNames = temporalArgs
-    ? temporalArgs.reduce((acc, t) => {
-        acc.push(t.name.value);
-        return acc;
-      }, [])
-    : [];
   // don't exclude first, offset, orderBy args for cypher directives
-  const excludedKeys = cypherDirective
-    ? []
-    : ['first', 'offset', 'orderBy', 'filter'];
-  return Object.keys(filters).length > 0
-    ? Object.entries(filters)
-        // exclude temporal arguments
-        .filter(
-          ([key]) => ![...excludedKeys, ...temporalArgNames].includes(key)
-        )
-        .map(([key, value]) => {
-          return { key, paramKey, value };
-        })
-    : [];
+  const excludedKeys = cypherDirective ? [] : ['first', 'offset', 'orderBy', 'filter'];
+  return Object.entries(filters)
+    .filter(([key]) => !excludedKeys.includes(key))
+    .map(([key, value]) => {
+      return { key, paramKey, value };
+    });
 }
 
-export function paramsToString(params, cypherParams) {
+export function paramsToString(params) {
   if (params.length > 0) {
-    const strings = _.map(params, param => {
+    const strings = params.map(param => {
       return `${param.key}:${param.paramKey ? `$${param.paramKey}.` : '$'}${
-        typeof param.value.index === 'undefined'
-          ? param.key
-          : `${param.value.index}_${param.key}`
+        typeof param.value.index === 'undefined' ? param.key : `${param.value.index}_${param.key}`
       }`;
     });
-    return `{${strings.join(', ')}${
-      cypherParams ? `, cypherParams: $cypherParams}` : '}'
-    }`;
+    return `{${strings.join(', ')}}`;
   }
   return '';
 }
@@ -387,17 +311,10 @@ function orderByStatement(resolveInfo, { orderBy, order }) {
   return ` ${variableName}.${orderBy} ${order === 'asc' ? 'ASC' : 'DESC'} `;
 }
 
-export const computeOrderBy = (resolveInfo, schemaType) => {
+export const computeOrderBy = (resolveInfo: GraphQLResolveInfo, schemaType: GraphQLNamedType) => {
   let selection = resolveInfo.operation.selectionSet.selections[0];
-  const orderByArgs = argumentValue(
-    selection,
-    'orderBy',
-    resolveInfo.variableValues
-  );
-
-  if (orderByArgs == undefined) {
-    return { cypherPart: '', optimization: { earlyOrderBy: false } };
-  }
+  const orderByArgs = argumentValue(selection, 'orderBy', resolveInfo.variableValues);
+  if (!orderByArgs) return { cypherPart: '', optimization: { earlyOrderBy: false } };
 
   const orderByArray = Array.isArray(orderByArgs) ? orderByArgs : [orderByArgs];
 
@@ -406,11 +323,8 @@ export const computeOrderBy = (resolveInfo, schemaType) => {
 
   const orderByStatments = orderByArray.map(orderByVar => {
     const { orderBy, order } = splitOrderByArg(orderByVar);
-    const hasNoCypherDirective = _.isEmpty(
-      cypherDirective(schemaType, orderBy)
-    );
-    optimization.earlyOrderBy =
-      optimization.earlyOrderBy && hasNoCypherDirective;
+    const hasNoCypherDirective = lodash.isEmpty(cypherDirective(schemaType, orderBy));
+    optimization.earlyOrderBy = optimization.earlyOrderBy && hasNoCypherDirective;
     orderByStatements.push(orderByStatement(resolveInfo, { orderBy, order }));
   });
 
@@ -420,128 +334,13 @@ export const computeOrderBy = (resolveInfo, schemaType) => {
   };
 };
 
-export const possiblySetFirstId = ({ args, statements, params }) => {
-  const arg = args.find(e => _getNamedType(e).name.value === 'ID');
-  // arg is the first ID field if it exists, and we set the value
-  // if no value is provided for the field name (arg.name.value) in params
-  if (arg && arg.name.value && params[arg.name.value] === undefined) {
-    statements.push(`${arg.name.value}: apoc.create.uuid()`);
-  }
-  return statements;
-};
-
-export const getQueryArguments = resolveInfo => {
-  return resolveInfo.schema.getQueryType().getFields()[resolveInfo.fieldName]
-    .astNode.arguments;
-};
-
-export const getMutationArguments = resolveInfo => {
-  return resolveInfo.schema.getMutationType().getFields()[resolveInfo.fieldName]
-    .astNode.arguments;
-};
-
-// TODO refactor
-export const buildCypherParameters = ({
-  args,
-  statements = [],
-  params,
-  paramKey
-}) => {
-  const dataParams = paramKey ? params[paramKey] : params;
-  const paramKeys = dataParams ? Object.keys(dataParams) : [];
-  if (args) {
-    statements = paramKeys.reduce((acc, paramName) => {
-      const param = paramKey ? params[paramKey][paramName] : params[paramName];
-      // Get the AST definition for the argument matching this param name
-      const fieldAst = args.find(arg => arg.name.value === paramName);
-      if (fieldAst) {
-        const fieldType = _getNamedType(fieldAst.type);
-        if (isTemporalInputType(fieldType.name.value)) {
-          const formatted = param.formatted;
-          const temporalFunction = getTemporalCypherConstructor(fieldAst);
-          if (temporalFunction) {
-            // Prefer only using formatted, if provided
-            if (formatted) {
-              if (paramKey) params[paramKey][paramName] = formatted;
-              else params[paramName] = formatted;
-              acc.push(
-                `${paramName}: ${temporalFunction}($${
-                  paramKey ? `${paramKey}.` : ''
-                }${paramName})`
-              );
-            } else {
-              let temporalParam = {};
-              if (Array.isArray(param)) {
-                const count = param.length;
-                let i = 0;
-                for (; i < count; ++i) {
-                  temporalParam = param[i];
-                  const formatted = temporalParam.formatted;
-                  if (temporalParam.formatted) {
-                    paramKey
-                      ? (params[paramKey][paramName] = formatted)
-                      : (params[paramName] = formatted);
-                  } else {
-                    Object.keys(temporalParam).forEach(e => {
-                      if (Number.isInteger(temporalParam[e])) {
-                        paramKey
-                          ? (params[paramKey][paramName][i][e] = neo4j.int(
-                              temporalParam[e]
-                            ))
-                          : (params[paramName][i][e] = neo4j.int(
-                              temporalParam[e]
-                            ));
-                      }
-                    });
-                  }
-                }
-                acc.push(
-                  `${paramName}: [value IN $${
-                    paramKey ? `${paramKey}.` : ''
-                  }${paramName} | ${temporalFunction}(value)]`
-                );
-              } else {
-                temporalParam = paramKey
-                  ? params[paramKey][paramName]
-                  : params[paramName];
-                const formatted = temporalParam.formatted;
-                if (temporalParam.formatted) {
-                  paramKey
-                    ? (params[paramKey][paramName] = formatted)
-                    : (params[paramName] = formatted);
-                } else {
-                  Object.keys(temporalParam).forEach(e => {
-                    if (Number.isInteger(temporalParam[e])) {
-                      paramKey
-                        ? (params[paramKey][paramName][e] = neo4j.int(
-                            temporalParam[e]
-                          ))
-                        : (params[paramName][e] = neo4j.int(temporalParam[e]));
-                    }
-                  });
-                }
-                acc.push(
-                  `${paramName}: ${temporalFunction}($${
-                    paramKey ? `${paramKey}.` : ''
-                  }${paramName})`
-                );
-              }
-            }
-          }
-        } else {
-          // normal case
-          acc.push(
-            `${paramName}:$${paramKey ? `${paramKey}.` : ''}${paramName}`
-          );
-        }
-      }
-      return acc;
-    }, statements);
-  }
-  if (paramKey) {
-    params[paramKey] = dataParams;
-  }
-  return [params, statements];
+export const getQueryArguments = (resolveInfo: GraphQLResolveInfo) => {
+  if (!resolveInfo.schema) throw new Error('neo4j-graphql: No schema has been found');
+  const queryType = resolveInfo.schema.getQueryType();
+  if (!queryType) throw new Error('neo4j-graphql: No Query Type has been found');
+  const { astNode } = queryType.getFields()[resolveInfo.fieldName];
+  if (!astNode) throw new Error(`neo4j-graphql: No astNode found for fieldname: ${resolveInfo.fieldName}`);
+  return astNode.arguments;
 };
 
 // TODO refactor to handle Query/Mutation type schema directives
@@ -550,18 +349,12 @@ const directiveWithArgs = (directiveName, args) => (schemaType, fieldName) => {
     return !isGraphqlScalarType(schemaType)
       ? schemaType.getFields() &&
           schemaType.getFields()[fieldName] &&
-          schemaType
-            .getFields()
-            [fieldName].astNode.directives.find(
-              e => e.name.value === directiveName
-            )
+          schemaType.getFields()[fieldName].astNode.directives.find(e => e.name.value === directiveName)
       : {};
   }
 
   function directiveArgument(directive, name) {
-    return directive && directive.arguments
-      ? directive.arguments.find(e => e.name.value === name).value.value
-      : [];
+    return directive && directive.arguments ? directive.arguments.find(e => e.name.value === name).value.value : [];
   }
 
   const directive = fieldDirective(schemaType, fieldName, directiveName);
@@ -579,10 +372,7 @@ const directiveWithArgs = (directiveName, args) => (schemaType, fieldName) => {
 
 export const cypherDirective = directiveWithArgs('cypher', ['statement']);
 
-export const relationDirective = directiveWithArgs('relation', [
-  'name',
-  'direction'
-]);
+export const relationDirective = directiveWithArgs('relation', ['name', 'direction']);
 
 export const getTypeDirective = (relatedAstNode, name) => {
   return relatedAstNode && relatedAstNode.directives
@@ -591,19 +381,13 @@ export const getTypeDirective = (relatedAstNode, name) => {
 };
 
 export const getFieldDirective = (field, directive) => {
-  return (
-    field &&
-    field.directives &&
-    field.directives.find(e => e && e.name && e.name.value === directive)
-  );
+  return field && field.directives && field.directives.find(e => e && e.name && e.name.value === directive);
 };
 
 export const getRelationDirection = relationDirective => {
   let direction = {};
   try {
-    direction = relationDirective.arguments.filter(
-      a => a.name.value === 'direction'
-    )[0];
+    direction = relationDirective.arguments.filter(a => a.name.value === 'direction')[0];
     return direction.value.value;
   } catch (e) {
     // FIXME: should we ignore this error to define default behavior?
@@ -624,9 +408,7 @@ export const getRelationName = relationDirective => {
 
 export const addDirectiveDeclarations = (typeMap, config) => {
   // overwrites any provided directive declarations for system directive names
-  typeMap['cypher'] = parse(
-    `directive @cypher(statement: String) on FIELD_DEFINITION`
-  ).definitions[0];
+  typeMap['cypher'] = parse(`directive @cypher(statement: String) on FIELD_DEFINITION`).definitions[0];
   typeMap['relation'] = parse(
     `directive @relation(name: String, direction: _RelationDirections, from: String, to: String) on FIELD_DEFINITION | OBJECT`
   ).definitions[0];
@@ -634,32 +416,23 @@ export const addDirectiveDeclarations = (typeMap, config) => {
   typeMap['MutationMeta'] = parse(
     `directive @MutationMeta(relationship: String, from: String, to: String) on FIELD_DEFINITION`
   ).definitions[0];
-  typeMap['neo4j_ignore'] = parse(
-    `directive @neo4j_ignore on FIELD_DEFINITION`
-  ).definitions[0];
-  typeMap['_RelationDirections'] = parse(
-    `enum _RelationDirections { IN OUT }`
-  ).definitions[0];
+  typeMap['neo4j_ignore'] = parse(`directive @neo4j_ignore on FIELD_DEFINITION`).definitions[0];
+  typeMap['_RelationDirections'] = parse(`enum _RelationDirections { IN OUT }`).definitions[0];
   typeMap = possiblyAddDirectiveDeclarations(typeMap, config);
   return typeMap;
 };
 
-export const getQueryCypherDirective = resolveInfo => {
-  return resolveInfo.schema
-    .getQueryType()
-    .getFields()
-    [resolveInfo.fieldName].astNode.directives.find(x => {
-      return x.name.value === 'cypher';
-    });
-};
-
-export const getMutationCypherDirective = resolveInfo => {
-  return resolveInfo.schema
-    .getMutationType()
-    .getFields()
-    [resolveInfo.fieldName].astNode.directives.find(x => {
-      return x.name.value === 'cypher';
-    });
+export const getQueryCypherDirective = (resolveInfo: GraphQLResolveInfo) => {
+  if (!resolveInfo || !resolveInfo.schema) throw new Error('neo4j-graphql: No schema has been found');
+  const queryType = resolveInfo.schema.getQueryType();
+  if (!queryType) throw new Error('neo4j-graphql: No Query Type has been found');
+  const { astNode } = queryType.getFields()[resolveInfo.fieldName];
+  if (!astNode) throw new Error(`neo4j-graphql: No astNode found for fieldname: ${resolveInfo.fieldName}`);
+  // If node has no directives return nothing.
+  if (!astNode.directives) return;
+  return astNode.directives.find(x => {
+    return x.name.value === 'cypher';
+  });
 };
 
 function argumentValue(selection, name, variableValues) {
@@ -678,10 +451,8 @@ export const getRelationTypeDirective = relationshipType => {
       : undefined;
   return directive
     ? {
-        name: directive.arguments.find(e => e.name.value === 'name').value
-          .value,
-        from: directive.arguments.find(e => e.name.value === 'from').value
-          .value,
+        name: directive.arguments.find(e => e.name.value === 'name').value.value,
+        from: directive.arguments.find(e => e.name.value === 'from').value.value,
         to: directive.arguments.find(e => e.name.value === 'to').value.value
       }
     : undefined;
@@ -697,9 +468,7 @@ export const getRelationMutationPayloadFieldsFromAst = relatedAstNode => {
         isList = _isListType(t);
         // Use name directly in order to prevent requiring required fields on the payload type
         acc.push(
-          `${fieldName}: ${isList ? '[' : ''}${_getNamedType(t).name.value}${
-            isList ? `]` : ''
-          }${print(t.directives)}`
+          `${fieldName}: ${isList ? '[' : ''}${_getNamedType(t).name.value}${isList ? `]` : ''}${print(t.directives)}`
         );
       }
       return acc;
@@ -718,11 +487,7 @@ const firstNonNullAndIdField = fields => {
   let valueTypeName = '';
   return fields.find(e => {
     valueTypeName = _getNamedType(e).name.value;
-    return (
-      e.name.value !== '_id' &&
-      e.type.kind === 'NonNullType' &&
-      valueTypeName === 'ID'
-    );
+    return e.name.value !== '_id' && e.type.kind === 'NonNullType' && valueTypeName === 'ID';
   });
 };
 
@@ -845,208 +610,42 @@ export const decideNestedVariableName = ({
   return variableName + '_' + fieldName;
 };
 
-export const initializeMutationParams = ({
-  resolveInfo,
-  mutationTypeCypherDirective,
-  otherParams,
-  first,
-  offset
-}) => {
-  return (isCreateMutation(resolveInfo) || isUpdateMutation(resolveInfo)) &&
-    !mutationTypeCypherDirective
-    ? { params: otherParams, ...{ first, offset } }
-    : { ...otherParams, ...{ first, offset } };
+export const createSkipLimit = (first: number, offset: number): string => {
+  const skip = (offset > 0 && ' SKIP $offset') || '';
+  const limit = (first > -1 && ' LIMIT $first') || '';
+  return skip + limit;
 };
 
-export const getOuterSkipLimit = (first, offset) =>
-  `${offset > 0 ? ` SKIP $offset` : ''}${first > -1 ? ' LIMIT $first' : ''}`;
-
-export const getPayloadSelections = resolveInfo => {
-  const filteredFieldNodes = filter(
-    resolveInfo.fieldNodes,
-    n => n.name.value === resolveInfo.fieldName
-  );
+export const getPayloadSelections = (resolveInfo: GraphQLResolveInfo) => {
+  const filteredFieldNodes = resolveInfo.fieldNodes.filter(node => node.name.value === resolveInfo.fieldName);
   if (filteredFieldNodes[0] && filteredFieldNodes[0].selectionSet) {
     // FIXME: how to handle multiple fieldNode matches
-    const x = extractSelections(
-      filteredFieldNodes[0].selectionSet.selections,
-      resolveInfo.fragments
-    );
+    const x = extractSelections(filteredFieldNodes[0].selectionSet.selections, resolveInfo.fragments);
     return x;
   }
   return [];
 };
 
-export const filterNullParams = ({ offset, first, otherParams }) => {
+export const filterNullParams = ({
+  offset,
+  first,
+  otherParams
+}: {
+  offset?: number;
+  first?: number;
+  otherParams: object;
+}): [Dictionary<any>, Dictionary<any>] => {
   return Object.entries({
     ...{ offset, first },
     ...otherParams
   }).reduce(
     ([nulls, nonNulls], [key, value]) => {
-      if (value === null) {
-        nulls[key] = value;
-      } else {
-        nonNulls[key] = value;
-      }
+      if (value === null) nulls[key] = value;
+      else nonNulls[key] = value;
       return [nulls, nonNulls];
     },
-    [{}, {}]
+    [{}, {}] as [Dictionary<any>, Dictionary<any>]
   );
-};
-
-export const splitSelectionParameters = (
-  params,
-  primaryKeyArgName,
-  paramKey
-) => {
-  const paramKeys = paramKey
-    ? Object.keys(params[paramKey])
-    : Object.keys(params);
-  const [primaryKeyParam, updateParams] = paramKeys.reduce(
-    (acc, t) => {
-      if (t === primaryKeyArgName) {
-        if (paramKey) {
-          acc[0][t] = params[paramKey][t];
-        } else {
-          acc[0][t] = params[t];
-        }
-      } else {
-        if (paramKey) {
-          if (acc[1][paramKey] === undefined) acc[1][paramKey] = {};
-          acc[1][paramKey][t] = params[paramKey][t];
-        } else {
-          acc[1][t] = params[t];
-        }
-      }
-      return acc;
-    },
-    [{}, {}]
-  );
-  const first = params.first;
-  const offset = params.offset;
-  if (first !== undefined) updateParams['first'] = first;
-  if (offset !== undefined) updateParams['offset'] = offset;
-  return [primaryKeyParam, updateParams];
-};
-
-export const isTemporalField = (schemaType, name) => {
-  const type = schemaType ? schemaType.name : '';
-  return (
-    isTemporalType(type) &&
-    (name === 'year' ||
-      name === 'month' ||
-      name === 'day' ||
-      name === 'hour' ||
-      name === 'minute' ||
-      name === 'second' ||
-      name === 'microsecond' ||
-      name === 'millisecond' ||
-      name === 'nanosecond' ||
-      name === 'timezone' ||
-      name === 'formatted')
-  );
-};
-
-export const isTemporalType = name => {
-  return (
-    name === '_Neo4jTime' ||
-    name === '_Neo4jDate' ||
-    name === '_Neo4jDateTime' ||
-    name === '_Neo4jLocalTime' ||
-    name === '_Neo4jLocalDateTime'
-  );
-};
-
-export const getTemporalCypherConstructor = fieldAst => {
-  const type = fieldAst ? _getNamedType(fieldAst.type).name.value : '';
-  return decideTemporalConstructor(type);
-};
-
-export const decideTemporalConstructor = typeName => {
-  switch (typeName) {
-    case '_Neo4jTimeInput':
-      return 'time';
-    case '_Neo4jDateInput':
-      return 'date';
-    case '_Neo4jDateTimeInput':
-      return 'datetime';
-    case '_Neo4jLocalTimeInput':
-      return 'localtime';
-    case '_Neo4jLocalDateTimeInput':
-      return 'localdatetime';
-    default:
-      return '';
-  }
-};
-
-export const getTemporalArguments = args => {
-  return args
-    ? args.reduce((acc, t) => {
-        if (!t) {
-          return acc;
-        }
-        const fieldType = _getNamedType(t.type).name.value;
-        if (isTemporalInputType(fieldType)) acc.push(t);
-        return acc;
-      }, [])
-    : [];
-};
-
-export const isTemporalInputType = name => {
-  return (
-    name === '_Neo4jTimeInput' ||
-    name === '_Neo4jDateInput' ||
-    name === '_Neo4jDateTimeInput' ||
-    name === '_Neo4jLocalTimeInput' ||
-    name === '_Neo4jLocalDateTimeInput'
-  );
-};
-
-export const temporalPredicateClauses = (
-  filters,
-  variableName,
-  temporalArgs,
-  parentParam
-) => {
-  return temporalArgs.reduce((acc, t) => {
-    // For every temporal argument
-    const argName = t.name.value;
-    let temporalParam = filters[argName];
-    if (temporalParam) {
-      // If a parameter value has been provided for it check whether
-      // the provided param value is in an indexed object for a nested argument
-      const paramIndex = temporalParam.index;
-      const paramValue = temporalParam.value;
-      // If it is, set and use its .value
-      if (paramValue) temporalParam = paramValue;
-      if (temporalParam['formatted']) {
-        // Only the dedicated 'formatted' arg is used if it is provided
-        acc.push(
-          `${variableName}.${argName} = ${getTemporalCypherConstructor(t)}($${
-            // use index if provided, for nested arguments
-            typeof paramIndex === 'undefined'
-              ? `${parentParam ? `${parentParam}.` : ''}${argName}.formatted`
-              : `${
-                  parentParam ? `${parentParam}.` : ''
-                }${paramIndex}_${argName}.formatted`
-          })`
-        );
-      } else {
-        Object.keys(temporalParam).forEach(e => {
-          acc.push(
-            `${variableName}.${argName}.${e} = $${
-              typeof paramIndex === 'undefined'
-                ? `${parentParam ? `${parentParam}.` : ''}${argName}`
-                : `${
-                    parentParam ? `${parentParam}.` : ''
-                  }${paramIndex}_${argName}`
-            }.${e}`
-          );
-        });
-      }
-    }
-    return acc;
-  }, []);
 };
 
 // An ignored type is a type without at least 1 non-ignored field
@@ -1058,12 +657,7 @@ export const excludeIgnoredTypes = (typeMap, config = {}) => {
   let excludedMutations = getExcludedTypes(config, 'mutation');
   // Add any ignored types to exclusion arrays
   Object.keys(typeMap).forEach(name => {
-    if (
-      typeMap[name].fields &&
-      !typeMap[name].fields.find(
-        field => !getFieldDirective(field, 'neo4j_ignore')
-      )
-    ) {
+    if (typeMap[name].fields && !typeMap[name].fields.find(field => !getFieldDirective(field, 'neo4j_ignore'))) {
       // All fields are ignored, so exclude the type
       excludedQueries.push(name);
       excludedMutations.push(name);
@@ -1087,21 +681,12 @@ export const excludeIgnoredTypes = (typeMap, config = {}) => {
 };
 
 export const getExcludedTypes = (config, rootType) => {
-  return config &&
-    rootType &&
-    config[rootType] &&
-    typeof config[rootType] === 'object' &&
-    config[rootType].exclude
+  return config && rootType && config[rootType] && typeof config[rootType] === 'object' && config[rootType].exclude
     ? config[rootType].exclude
     : [];
 };
 
-export const possiblyAddIgnoreDirective = (
-  astNode,
-  typeMap,
-  resolvers,
-  config
-) => {
+export const possiblyAddIgnoreDirective = (astNode, typeMap, resolvers, config) => {
   const fields = astNode && astNode.fields ? astNode.fields : [];
   let valueTypeName = '';
   return fields.map(field => {
@@ -1116,8 +701,7 @@ export const possiblyAddIgnoreDirective = (
       // directives and can instead have their data post-processed by a custom field resolver
       !getFieldDirective(field, 'relation') &&
       !getFieldDirective(field, 'cypher') &&
-      !getTypeDirective(typeMap[valueTypeName], 'relation') &&
-      !isTemporalType(valueTypeName)
+      !getTypeDirective(typeMap[valueTypeName], 'relation')
     ) {
       // possibly initialize directives
       if (!field.directives) field.directives = [];
@@ -1129,10 +713,7 @@ export const possiblyAddIgnoreDirective = (
 };
 
 export const getCustomFieldResolver = (astNode, field, resolvers) => {
-  const typeResolver =
-    astNode && astNode.name && astNode.name.value
-      ? resolvers[astNode.name.value]
-      : undefined;
+  const typeResolver = astNode && astNode.name && astNode.name.value ? resolvers[astNode.name.value] : undefined;
   return typeResolver ? typeResolver[field.name.value] : undefined;
 };
 
@@ -1144,9 +725,7 @@ export const removeIgnoredFields = (schemaType, selections) => {
         // so check if this field is ignored
         schemaTypeField = schemaType.getFields()[e.name.value];
         return (
-          schemaTypeField &&
-          schemaTypeField.astNode &&
-          !getFieldDirective(schemaTypeField.astNode, 'neo4j_ignore')
+          schemaTypeField && schemaTypeField.astNode && !getFieldDirective(schemaTypeField.astNode, 'neo4j_ignore')
         );
       }
       // keep element by default

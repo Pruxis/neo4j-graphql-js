@@ -1,8 +1,7 @@
 {
-  "presets": ["env"],
+  "presets": ["@babel/env", "@babel/typescript"],
   "plugins": [
-    "transform-runtime",
-    "transform-async-generator-functions",
-    "transform-object-rest-spread"
+    "@babel/proposal-class-properties",
+    "@babel/proposal-object-rest-spread"
   ]
 }
